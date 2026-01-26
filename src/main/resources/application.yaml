@@ -1,0 +1,33 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: dice
+  data:
+    mongodb:
+      uri: mongodb://mongo:27017/dynamicdice
+      database: dice
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 30MB
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ******@gmail.com  #Replace with yours
+    password: **** **** **** ****  #Replace with yours
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+file:
+  upload-dir: uploads/dice
+
+volumes:
+  - ./uploads:/app/uploads
+
+
