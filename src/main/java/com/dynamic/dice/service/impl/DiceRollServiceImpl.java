@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.security.SecureRandom;
 import java.util.Random;
 
 @Service
@@ -18,12 +19,14 @@ import java.util.Random;
 public class DiceRollServiceImpl implements DiceRollService {
 
     private final DiceRepository diceRepository;
-    private final Random random = new Random();
+    private final Random random = new SecureRandom();
 
     @Override
-    public Map<String, Object> rollDice(String diceId, String userId) {
+    public Map<String, Object> rollDice(String diceId, String userId, String adminId) {
 
+        // A die owned by another admin is reported as "not found" so its existence isn't leaked.
         Dice dice = diceRepository.findById(diceId)
+                .filter(d -> d.getAdminId() != null && d.getAdminId().equals(adminId))
                 .orElseThrow(() -> new ResourceNotFoundException("Dice not found"));
 
         List<DiceFace> diceFaceList = dice.getFaces();

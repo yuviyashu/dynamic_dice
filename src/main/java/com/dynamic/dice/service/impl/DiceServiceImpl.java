@@ -58,6 +58,11 @@ public class DiceServiceImpl implements DiceService {
         return new ApiResponse("Dice saved successfully");
     }
 
+    @Override
+    public List<Dice> getDiceByAdmin(String adminId) {
+        return diceRepository.findByAdminId(adminId);
+    }
+
     private void validateDiceFaces(List<DiceFaceRequest> faces) {
 
         if (faces == null || faces.size() != 6) {

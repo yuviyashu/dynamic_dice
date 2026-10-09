@@ -15,8 +15,8 @@ spring:
   mail:
     host: smtp.gmail.com
     port: 587
-    username: ******@gmail.com  #Replace with yours
-    password: **** **** **** ****  #Replace with yours
+    username: ${SPRING_MAIL_USERNAME:}   # set via env var / .env, never commit real values
+    password: ${SPRING_MAIL_PASSWORD:}
     properties:
       mail:
         smtp:
@@ -26,11 +26,6 @@ spring:
 
 file:
   upload-dir: uploads/dice
-
-volumes:
-  - ./uploads:/app/uploads
-
-
 
 jwt:
   secret: ${JWT_SECRET}          # Base64, >= 32 bytes. Set via environment variable, never commit the real value.

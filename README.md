@@ -1,5 +1,7 @@
 # Dynamic Dice API
 
+[![CI](https://github.com/yuviyashu/dynamic_dice/actions/workflows/ci.yml/badge.svg)](https://github.com/yuviyashu/dynamic_dice/actions/workflows/ci.yml)
+
 A secure, role-based REST API for creating and rolling **custom dice** — built with Java 21, Spring Boot 3, Spring Security (stateless JWT) and MongoDB.
 
 Admins design dice with six image-backed faces; users onboard under an admin through an **admin-approved, email-OTP registration flow**, then roll that admin's dice. The service is frontend-agnostic and can sit behind any web or mobile client.
@@ -25,13 +27,15 @@ Admins design dice with six image-backed faces; users onboard under an admin thr
 ## Highlights
 
 - **Stateless JWT security** — HS256-signed tokens carrying `userId`, `role` and `adminId` claims; no server-side sessions.
-- **Role-based access control** — `ADMIN` and `USER` roles enforced in the Spring Security filter chain (`/api/admin/**`, `/api/user/**`).
+- **Role-based access control** — `ADMIN` and `USER` roles enforced in the Spring Security filter chain (`/api/admin/**`, `/api/user/**`); tenant scope (which admin's dice you can see or roll) is derived from the signed token, never from client headers.
+- **Correct auth semantics** — missing, malformed or expired tokens return `401`; a valid token with the wrong role returns `403`.
 - **Admin-approved onboarding** — a user's registration OTP is emailed to *their admin*, so admins gate who joins their workspace.
-- **OTP lifecycle** — 6-digit, single-use codes with a 5-minute expiry, persisted in MongoDB.
+- **OTP lifecycle** — 6-digit, single-use codes from `SecureRandom` with a 5-minute expiry, persisted in MongoDB.
 - **Domain rules in the service layer** — exactly 6 faces per die, every face needs a value and an image, max 3 dice per admin.
 - **Image upload** — admins upload face images (≤ 5 MB, `image/*` only), stored per admin and served under `/uploads/**`.
 - **Consistent error contract** — a global `@RestControllerAdvice` maps exceptions to a uniform JSON error body.
 - **Container-ready** — multi-stage Dockerfile and a Docker Compose stack with MongoDB.
+- **CI** — GitHub Actions builds, runs the test suite with JaCoCo coverage, and verifies the Docker image on every push and pull request.
 
 ## Architecture
 
@@ -161,12 +165,11 @@ export JWT_SECRET=$(openssl rand -base64 32)
 git clone https://github.com/yuviyashu/dynamic_dice.git
 cd dynamic_dice
 
-export JWT_SECRET=$(openssl rand -base64 32)
-export SPRING_MAIL_USERNAME=you@gmail.com
-export SPRING_MAIL_PASSWORD='your-app-password'
-
+cp .env.example .env      # then fill in JWT_SECRET and the SMTP credentials
 docker compose up --build
 ```
+
+Docker Compose reads `.env` automatically; it is git-ignored so secrets stay on your machine. Exporting the same variables in your shell works too.
 
 This starts MongoDB (`localhost:27017`) and the API (`localhost:8082`). Uploaded images are persisted to `./uploads`.
 
@@ -177,6 +180,7 @@ This starts MongoDB (`localhost:27017`) and the API (`localhost:8082`). Uploaded
 docker run -d --name mongo -p 27017:27017 mongo:6.0
 
 # Run the app with the local profile (points at localhost MongoDB)
+export JWT_SECRET=$(openssl rand -base64 32)
 export SPRING_MAIL_USERNAME=you@gmail.com
 export SPRING_MAIL_PASSWORD='your-app-password'
 SPRING_PROFILES_ACTIVE=local ./gradlew bootRun
@@ -222,9 +226,9 @@ Interactive documentation (Swagger UI) is available once the app is running:
 | POST   | `/auth/login`                          | Public | Exchange credentials for a JWT                      |
 | POST   | `/api/admin/images/upload`             | ADMIN  | Upload a face image (multipart `file`) → `imageUrl` |
 | POST   | `/api/admin/dice`                      | ADMIN  | Create a die with exactly six faces                 |
-| GET    | `/api/admin/dice`                      | ADMIN  | List dice for an admin (`X-ADMIN-ID` header)        |
-| GET    | `/api/user/dice`                       | USER   | List dice available to the user (`X-ADMIN-ID`)      |
-| POST   | `/api/user/dice/roll/{diceId}`         | USER   | Roll a die → `{rolledValue, imageUrl}`              |
+| GET    | `/api/admin/dice`                      | ADMIN  | List the calling admin's dice                       |
+| GET    | `/api/user/dice`                       | USER   | List the dice of the user's admin                   |
+| POST   | `/api/user/dice/roll/{diceId}`         | USER   | Roll one of your admin's dice → `{rolledValue, imageUrl}` |
 | GET    | `/actuator/health`                     | Public | Liveness / health check                             |
 
 ### Example: end-to-end with curl
@@ -273,12 +277,24 @@ curl -X POST localhost:8082/api/admin/dice \
 ## Testing
 
 ```bash
-# Run the test suite (JWT_SECRET must be set; any Base64 key ≥ 32 bytes works)
-JWT_SECRET=$(openssl rand -base64 32) ./gradlew test
-
-# HTML report
-open build/reports/tests/test/index.html
+./gradlew test
 ```
+
+No external services are needed: tests run under the `test` profile with a throwaway signing key.
+
+| Suite                              | Type                | What it covers                                                       |
+|------------------------------------|---------------------|----------------------------------------------------------------------|
+| `DiceServiceImplTest`              | Unit (Mockito)      | 6-face rule, image required, max 3 dice per admin, admin scoping     |
+| `DiceRollServiceImplTest`          | Unit (Mockito)      | Roll result, cross-admin roll blocked, unknown die → 404             |
+| `JwtUtilTest`                      | Unit                | Claims round-trip, foreign-key and expired tokens rejected           |
+| `OtpUtilTest`                      | Unit                | OTP format                                                           |
+| `UserDiceControllerSecurityTest`   | Web slice (MockMvc) | 401 / 403 behaviour, scope taken from JWT not headers                |
+| `DiceApplicationTests`             | Context             | Application context starts                                           |
+
+Reports:
+
+- Tests: `build/reports/tests/test/index.html`
+- Coverage (JaCoCo): `build/reports/jacoco/test/html/index.html`
 
 ## Project structure
 
@@ -299,11 +315,12 @@ src/main/java/com/dynamic/dice
 
 ## Roadmap
 
-- [ ] Unit and integration tests (Testcontainers MongoDB) with JaCoCo coverage gate
-- [ ] GitHub Actions CI: build, test, coverage, container image
-- [ ] Derive admin scope from the JWT instead of the `X-ADMIN-ID` header
+- [x] Unit and web-slice tests with JaCoCo coverage report
+- [x] GitHub Actions CI: build, test, coverage, container image
+- [x] Derive admin scope from the JWT instead of client headers
+- [ ] Integration tests against real MongoDB (Testcontainers) and a coverage gate
 - [ ] Bean Validation (`@Valid`) on all request DTOs
-- [ ] OTP hardening: `SecureRandom`, attempt limits, rate limiting, TTL index
+- [ ] OTP hardening: attempt limits, rate limiting, TTL index
 - [ ] Persist roll history (`dice_roll_logs`) and expose a history endpoint
 - [ ] Object storage (S3-compatible) for images
 

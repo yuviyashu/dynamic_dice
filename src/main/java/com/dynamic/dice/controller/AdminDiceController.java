@@ -1,10 +1,8 @@
 package com.dynamic.dice.controller;
 
-
 import com.dynamic.dice.dto.ApiResponse;
 import com.dynamic.dice.dto.CreateDiceRequest;
 import com.dynamic.dice.model.Dice;
-import com.dynamic.dice.repository.DiceRepository;
 import com.dynamic.dice.service.DiceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -20,10 +18,9 @@ import java.util.List;
 public class AdminDiceController {
 
     private final DiceService diceService;
-    private final DiceRepository diceRepository;
 
     /**
-     * Create Dice (ADMIN only)
+     * Create Dice (ADMIN only). The owning admin is taken from the JWT subject.
      */
     @PostMapping
     public ResponseEntity<ApiResponse> createDice(
@@ -35,13 +32,10 @@ public class AdminDiceController {
     }
 
     /**
-     * Get all dice created by admin
+     * Get all dice created by the authenticated admin.
      */
     @GetMapping
-    public ResponseEntity<List<Dice>> getAdminDice(
-            @RequestHeader("X-ADMIN-ID") String adminId) {
-
-        List<Dice> diceList = diceRepository.findByAdminId(adminId);
-        return ResponseEntity.ok(diceList);
+    public ResponseEntity<List<Dice>> getAdminDice(Authentication authentication) {
+        return ResponseEntity.ok(diceService.getDiceByAdmin(authentication.getName()));
     }
 }
