@@ -101,7 +101,7 @@ sequenceDiagram
     participant DB as MongoDB
     participant M as SMTP
 
-    rect rgb(240,245,255)
+    rect rgba(66,135,245,0.12)
     note over A,M: Admin registration
     A->>API: POST /auth/admin/register/request-otp {email}
     API->>DB: save OTP (5-min expiry)
@@ -110,7 +110,7 @@ sequenceDiagram
     API->>DB: validate OTP, create ADMIN (BCrypt), mark OTP used
     end
 
-    rect rgb(240,255,245)
+    rect rgba(46,160,67,0.12)
     note over U,M: User registration (approved by admin)
     U->>API: POST /auth/user/register/request-otp {userEmail, adminEmail}
     API->>M: email OTP to the ADMIN
@@ -119,10 +119,10 @@ sequenceDiagram
     API->>DB: create USER linked to adminId
     end
 
-    rect rgb(255,248,240)
+    rect rgba(245,159,0,0.12)
     note over U,API: Login and authorised calls
     U->>API: POST /auth/login {email, password}
-    API-->>U: JWT (sub=userId, role, adminId; 1h expiry)
+    API-->>U: JWT (sub=userId, role, adminId, 1h expiry)
     U->>API: POST /api/user/dice/roll/{diceId} + Authorization: Bearer JWT
     API->>API: JwtAuthenticationFilter verifies signature, sets ROLE_USER
     API-->>U: {rolledValue, imageUrl}
