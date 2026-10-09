@@ -31,3 +31,7 @@ volumes:
   - ./uploads:/app/uploads
 
 
+
+jwt:
+  secret: ${JWT_SECRET}          # Base64, >= 32 bytes. Set via environment variable, never commit the real value.
+  expiration-ms: 3600000         # 1 hour

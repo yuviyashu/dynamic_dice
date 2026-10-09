@@ -1,372 +1,312 @@
 # Dynamic Dice API
 
-Dynamic Dice – Backend APIs is a backend-only, microservices-based application that exposes secure REST APIs for user onboarding, authentication, and dynamic dice management. The system is frontend-agnostic and can be integrated with any UI framework such as React, Angular, Vue, mobile apps, or other client technologies.
+A secure, role-based REST API for creating and rolling **custom dice** — built with Java 21, Spring Boot 3, Spring Security (stateless JWT) and MongoDB.
 
-## 🎯 Features
+Admins design dice with six image-backed faces; users onboard under an admin through an **admin-approved, email-OTP registration flow**, then roll that admin's dice. The service is frontend-agnostic and can sit behind any web or mobile client.
 
-- **User Management**: Admin and User registration with OTP-based verification
-- **Authentication**: JWT-based secure authentication system
-- **Dynamic Dice Creation**: Admins can create custom dice with 6 faces and images
-- **Dice Rolling**: Users can roll dice and get random results
-- **Image Upload**: Upload and manage dice face images
-- **Role-based Access Control**: Admin and User roles with specific permissions
-- **Email Notifications**: OTP delivery via email
-- **API Documentation**: Swagger/OpenAPI documentation included
+---
 
-## 🛠 Tech Stack
+## Table of contents
 
-- **Backend**: Spring Boot 3.2.5
-- **Language**: Java 17
-- **Database**: MongoDB
-- **Authentication**: JWT (JSON Web Tokens)
-- **Build Tool**: Gradle
-- **Documentation**: Swagger/OpenAPI 3.0
-- **Containerization**: Docker & Docker Compose
-- **Email**: Spring Mail (Gmail SMTP)
+- [Highlights](#highlights)
+- [Architecture](#architecture)
+- [Authentication flow](#authentication-flow)
+- [Tech stack](#tech-stack)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [API reference](#api-reference)
+- [Testing](#testing)
+- [Project structure](#project-structure)
+- [Roadmap](#roadmap)
+- [License](#license)
 
-## 📋 Prerequisites
+---
 
-Before you begin, ensure you have the following installed:
+## Highlights
 
-- **Java 17** or higher
-- **Gradle 8.5** or higher
-- **MongoDB 6.0** or higher
-- **Docker** and **Docker Compose** (for containerized deployment)
-- **Git** for version control
+- **Stateless JWT security** — HS256-signed tokens carrying `userId`, `role` and `adminId` claims; no server-side sessions.
+- **Role-based access control** — `ADMIN` and `USER` roles enforced in the Spring Security filter chain (`/api/admin/**`, `/api/user/**`).
+- **Admin-approved onboarding** — a user's registration OTP is emailed to *their admin*, so admins gate who joins their workspace.
+- **OTP lifecycle** — 6-digit, single-use codes with a 5-minute expiry, persisted in MongoDB.
+- **Domain rules in the service layer** — exactly 6 faces per die, every face needs a value and an image, max 3 dice per admin.
+- **Image upload** — admins upload face images (≤ 5 MB, `image/*` only), stored per admin and served under `/uploads/**`.
+- **Consistent error contract** — a global `@RestControllerAdvice` maps exceptions to a uniform JSON error body.
+- **Container-ready** — multi-stage Dockerfile and a Docker Compose stack with MongoDB.
 
-## 🚀 Quick Start
+## Architecture
 
-### Option 1: Using Docker Compose (Recommended)
+A single Spring Boot service with a classic layered design: controllers → services → Spring Data repositories → MongoDB.
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd dynamic_dice
-   ```
+```mermaid
+flowchart LR
+    Client["Client<br/>(Web / Mobile / Postman)"]
 
-2. **Start the application**
-   ```bash
-   docker-compose up --build
-   ```
+    subgraph App["Dynamic Dice API · Spring Boot (port 8082)"]
+        direction TB
+        Filter["JwtAuthenticationFilter<br/>+ SecurityFilterChain (RBAC)"]
+        subgraph Controllers
+            AuthC["Auth controllers<br/>/auth/**"]
+            AdminC["Admin controllers<br/>/api/admin/**"]
+            UserC["User controller<br/>/api/user/**"]
+        end
+        subgraph Services
+            AuthS["AuthService<br/>OTP · BCrypt · JWT"]
+            DiceS["DiceService<br/>dice rules"]
+            RollS["DiceRollService"]
+            ImgS["ImageUploadService"]
+            MailS["EmailService"]
+        end
+        Repos["Spring Data<br/>Mongo repositories"]
+        Advice["GlobalExceptionHandler"]
+    end
 
-3. **Access the application**
-   - API Base URL: `http://localhost:8082`
-   - Swagger UI: `http://localhost:8082/swagger-ui.html`
-   - MongoDB: `localhost:27017`
+    Mongo[("MongoDB<br/>users · dice · otp_requests")]
+    SMTP["SMTP server<br/>(e.g. Gmail)"]
+    Disk[("File storage<br/>uploads/dice/{adminId}")]
 
-### Option 2: Local Development Setup
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd dynamic_dice
-   ```
-
-2. **Start MongoDB**
-   ```bash
-   # Using Docker
-   docker run -d -p 27017:27017 --name mongo mongo:6.0
-   
-   # Or install MongoDB locally
-   # Follow MongoDB installation guide for your OS
-   ```
-
-3. **Configure application**
-   - Update `src/main/resources/application.yaml` with your MongoDB connection details
-   - Configure email settings for OTP functionality
-
-4. **Build and run the application**
-   ```bash
-   # Using Gradle wrapper
-   ./gradlew clean build
-   ./gradlew bootrun
-   
-   # Or using your local Gradle
-   gradle clean build
-   gradle bootrun
-   ```
-
-5. **Access the application**
-   - API Base URL: `http://localhost:8082`
-   - Swagger UI: `http://localhost:8082/swagger-ui.html`
-
-## 📚 API Documentation
-
-### Authentication Endpoints
-
-#### Admin Registration
-```http
-POST /auth/admin/register/request-otp
-Content-Type: application/json
-
-{
-  "email": "admin@example.com"
-}
+    Client -->|"HTTPS + Bearer JWT"| Filter
+    Filter --> AuthC & AdminC & UserC
+    AuthC --> AuthS
+    AdminC --> DiceS & ImgS
+    UserC --> RollS
+    AuthS --> MailS
+    AuthS & DiceS & RollS --> Repos
+    Repos --> Mongo
+    MailS --> SMTP
+    ImgS --> Disk
+    Controllers -. errors .-> Advice
 ```
 
-```http
-POST /auth/admin/register/verify-otp
-Content-Type: application/json
+### Data model
 
-{
-  "email": "admin@example.com",
-  "otp": "123456",
-  "password": "securePassword"
-}
+| Collection       | Purpose                                                                 |
+|------------------|-------------------------------------------------------------------------|
+| `users`          | Admins and users. `username` = email, BCrypt password, `role`, and `adminId` for users. |
+| `dice`           | A die owned by an admin: name, status and exactly six `{value, imageUrl}` faces. |
+| `otp_requests`   | OTP code, purpose (`ADMIN_REGISTRATION` / `USER_REGISTRATION`), expiry, used flag, metadata. |
+| `dice_roll_logs` | Roll audit model (repository in place; persistence planned — see [Roadmap](#roadmap)). |
+
+## Authentication flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor A as Admin
+    actor U as User
+    participant API as Dynamic Dice API
+    participant DB as MongoDB
+    participant M as SMTP
+
+    rect rgb(240,245,255)
+    note over A,M: Admin registration
+    A->>API: POST /auth/admin/register/request-otp {email}
+    API->>DB: save OTP (5-min expiry)
+    API->>M: email OTP to admin
+    A->>API: POST /auth/admin/register/verify-otp {email, otp, password}
+    API->>DB: validate OTP, create ADMIN (BCrypt), mark OTP used
+    end
+
+    rect rgb(240,255,245)
+    note over U,M: User registration (approved by admin)
+    U->>API: POST /auth/user/register/request-otp {userEmail, adminEmail}
+    API->>M: email OTP to the ADMIN
+    A-->>U: shares OTP out-of-band (approval)
+    U->>API: POST /auth/user/register/verify-otp {adminEmail, otp, userPassword}
+    API->>DB: create USER linked to adminId
+    end
+
+    rect rgb(255,248,240)
+    note over U,API: Login and authorised calls
+    U->>API: POST /auth/login {email, password}
+    API-->>U: JWT (sub=userId, role, adminId; 1h expiry)
+    U->>API: POST /api/user/dice/roll/{diceId} + Authorization: Bearer JWT
+    API->>API: JwtAuthenticationFilter verifies signature, sets ROLE_USER
+    API-->>U: {rolledValue, imageUrl}
+    end
 ```
 
-#### User Registration
-```http
-POST /auth/user/register/request-otp
-Content-Type: application/json
+## Tech stack
 
-{
-  "userEmail": "user@example.com",
-  "adminEmail": "admin@example.com"
-}
-```
+| Area            | Technology                                                    |
+|-----------------|---------------------------------------------------------------|
+| Language        | Java 21                                                       |
+| Framework       | Spring Boot 3.2 (Web MVC, Validation, Actuator, Mail)         |
+| Security        | Spring Security 6, JJWT 0.11 (HS256), BCrypt                  |
+| Persistence     | MongoDB 6, Spring Data MongoDB                                |
+| API docs        | springdoc-openapi (OpenAPI 3 + Swagger UI)                    |
+| Build           | Gradle 8.5 (wrapper included)                                 |
+| Containers      | Docker (multi-stage build), Docker Compose                    |
+| Productivity    | Lombok                                                        |
+| Testing         | JUnit 5, Spring Boot Test                                     |
 
-```http
-POST /auth/user/register/verify-otp
-Content-Type: application/json
+## Getting started
 
-{
-  "userEmail": "user@example.com",
-  "adminEmail": "admin@example.com",
-  "otp": "123456",
-  "userPassword": "userPassword"
-}
-```
+### Prerequisites
 
-#### Login
-```http
-POST /auth/login
-Content-Type: application/json
+- **Docker** + Docker Compose v2 — for the one-command setup, **or**
+- **JDK 21** and a running **MongoDB 6+** — for running from source
+- An SMTP account for OTP emails (for Gmail, create an [App Password](https://support.google.com/accounts/answer/185833))
 
-{
-  "email": "user@example.com",
-  "password": "password"
-}
-```
+### 1. Generate a JWT signing key
 
-### Admin Endpoints
-
-#### Create Dice
-```http
-POST /api/admin/dice
-Authorization: Bearer <jwt-token>
-Content-Type: application/json
-
-{
-  "diceName": "My Custom Dice",
-  "faces": [
-    {
-      "value": "1",
-      "imageUrl": "http://example.com/face1.png"
-    },
-    {
-      "value": "2",
-      "imageUrl": "http://example.com/face2.png"
-    },
-    {
-      "value": "3",
-      "imageUrl": "http://example.com/face3.png"
-    },
-    {
-      "value": "4",
-      "imageUrl": "http://example.com/face4.png"
-    },
-    {
-      "value": "5",
-      "imageUrl": "http://example.com/face5.png"
-    },
-    {
-      "value": "6",
-      "imageUrl": "http://example.com/face6.png"
-    }
-  ]
-}
-```
-
-#### Get Admin Dice
-```http
-GET /api/admin/dice
-Authorization: Bearer <jwt-token>
-X-ADMIN-ID: <admin-id>
-```
-
-#### Upload Image
-```http
-POST /api/admin/images/upload
-Authorization: Bearer <jwt-token>
-Content-Type: multipart/form-data
-
-file: <image-file>
-```
-
-### User Endpoints
-
-#### Get Available Dice
-```http
-GET /api/user/dice
-Authorization: Bearer <jwt-token>
-X-ADMIN-ID: <admin-id>
-```
-
-#### Roll Dice
-```http
-POST /api/user/dice/roll/{diceId}
-Authorization: Bearer <jwt-token>
-```
-
-## 🔧 Configuration
-
-### Environment Variables
-
-The application can be configured using the following environment variables:
-
-```yaml
-# Server Configuration
-server:
-  port: 8082
-
-# MongoDB Configuration
-spring:
-  data:
-    mongodb:
-      uri: mongodb://localhost:27017/dynamicdice
-      database: dice
-
-# Email Configuration (Gmail SMTP)
-spring:
-  mail:
-    host: smtp.gmail.com
-    port: 587
-    username: your-email@gmail.com
-    password: your-app-password
-    properties:
-      mail:
-        smtp:
-          auth: true
-          starttls:
-            enable: true
-
-# File Upload Configuration
-file:
-  upload-dir: uploads/dice
-```
-
-### Email Setup
-
-To enable OTP functionality, you need to configure Gmail SMTP:
-
-1. Enable 2-factor authentication on your Gmail account
-2. Generate an App Password
-3. Update the email configuration in `application.yaml`
-
-## 🏗 Project Structure
-
-```
-src/main/java/com/dynamic/dice/
-├── controller/          # REST API controllers
-│   ├── AdminDiceController.java
-│   ├── AdminRegistrationController.java
-│   ├── ImageUploadController.java
-│   ├── LoginController.java
-│   ├── UserDiceController.java
-│   └── UserRegistrationController.java
-├── dto/                 # Data Transfer Objects
-├── enums/              # Enumerations
-├── exception/          # Custom exceptions
-├── filter/             # Security filters
-├── handler/            # Exception handlers
-├── model/              # Database entities
-│   ├── Dice.java
-│   ├── DiceFace.java
-│   ├── DiceRollLog.java
-│   ├── OtpRequest.java
-│   └── User.java
-├── repository/         # MongoDB repositories
-├── service/            # Business logic
-└── utils/              # Utility classes
-```
-
-## 🎮 Usage Flow
-
-1. **Admin Registration**: Admin registers with OTP verification
-2. **User Registration**: Users register with admin approval via OTP
-3. **Login**: Both admin and users login to get JWT tokens
-4. **Dice Creation**: Admin creates custom dice with 6 faces and images
-5. **Dice Rolling**: Users roll dice to get random results
-
-## 🔒 Security Features
-
-- **JWT Authentication**: Secure token-based authentication
-- **Role-based Access Control**: Admin and User roles
-- **Password Encryption**: BCrypt password hashing
-- **OTP Verification**: Email-based OTP for registration
-- **Input Validation**: Request validation using Spring Validation
-
-## 📝 Business Rules
-
-- Each admin can create maximum 3 dice
-- Each dice must have exactly 6 faces
-- Each dice face must have a value and an image
-- Users can only roll dice created by their admin
-- OTP expires in 5 minutes
-- File upload size limited to 5MB per file
-
-## 🐳 Docker Deployment
-
-The application includes Docker support:
-
-- **Dockerfile**: Multi-stage build for production deployment
-- **docker-compose.yml**: Complete stack with MongoDB
-- **Volume mounting**: Persistent data storage for MongoDB and uploaded files
-
-## 🧪 Testing
-
-Run the test suite:
+The signing key is never committed. Generate a Base64 key of at least 32 bytes:
 
 ```bash
-# Run all tests
-./gradlew test
-
-# Run tests with coverage
-./gradlew test jacocoTestReport
+export JWT_SECRET=$(openssl rand -base64 32)
 ```
 
-## 📈 Monitoring
+### 2a. Run with Docker Compose (recommended)
 
-The application includes Spring Boot Actuator for monitoring:
+```bash
+git clone https://github.com/yuviyashu/dynamic_dice.git
+cd dynamic_dice
 
-- Health checks: `http://localhost:8082/actuator/health`
+export JWT_SECRET=$(openssl rand -base64 32)
+export SPRING_MAIL_USERNAME=you@gmail.com
+export SPRING_MAIL_PASSWORD='your-app-password'
 
-## 🤝 Contributing
+docker compose up --build
+```
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+This starts MongoDB (`localhost:27017`) and the API (`localhost:8082`). Uploaded images are persisted to `./uploads`.
 
-## 📄 License
+### 2b. Run from source
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+```bash
+# Start MongoDB
+docker run -d --name mongo -p 27017:27017 mongo:6.0
 
-## 🆘 Support
+# Run the app with the local profile (points at localhost MongoDB)
+export SPRING_MAIL_USERNAME=you@gmail.com
+export SPRING_MAIL_PASSWORD='your-app-password'
+SPRING_PROFILES_ACTIVE=local ./gradlew bootRun
+```
 
-If you encounter any issues or have questions:
+### 3. Verify
 
-1. Check the [Swagger UI](http://localhost:8082/swagger-ui.html) for API documentation
-2. Review the application logs for error details
-3. Ensure all prerequisites are properly configured
-4. Create an issue in the repository with detailed information
+```bash
+curl http://localhost:8082/actuator/health
+# {"status":"UP"}
+```
 
-## 🔄 Version History
+## Configuration
 
-- **v0.0.1-SNAPSHOT**: Initial release with core functionality
-  - User authentication and registration
-  - Dice creation and management
-  - Image upload functionality
-  - JWT-based security
+All settings live in `src/main/resources/application.yaml` and can be overridden with environment variables (Spring relaxed binding).
+
+| Property                         | Env variable                     | Default                               | Description                              |
+|----------------------------------|----------------------------------|---------------------------------------|------------------------------------------|
+| `server.port`                    | `SERVER_PORT`                    | `8082`                                | HTTP port                                |
+| `spring.data.mongodb.uri`        | `SPRING_DATA_MONGODB_URI`        | `mongodb://mongo:27017/dynamicdice`   | MongoDB connection string                |
+| `jwt.secret`                     | `JWT_SECRET`                     | — (**required**)                      | Base64 HMAC key, ≥ 32 bytes              |
+| `jwt.expiration-ms`              | `JWT_EXPIRATION_MS`              | `3600000` (1 h)                       | Token lifetime                           |
+| `spring.mail.username`           | `SPRING_MAIL_USERNAME`           | —                                     | SMTP username                            |
+| `spring.mail.password`           | `SPRING_MAIL_PASSWORD`           | —                                     | SMTP password / app password             |
+| `file.upload-dir`                | `FILE_UPLOAD_DIR`                | `uploads/dice`                        | Image storage directory                  |
+| `spring.servlet.multipart.max-file-size` | —                        | `5MB`                                 | Max upload size per file                 |
+
+Profiles: `default` targets the Compose network (`mongo` host); `local` targets `localhost`.
+
+## API reference
+
+Interactive documentation (Swagger UI) is available once the app is running:
+
+- **Swagger UI:** http://localhost:8082/swagger-ui/index.html
+- **OpenAPI JSON:** http://localhost:8082/v3/api-docs
+
+| Method | Endpoint                               | Auth   | Description                                         |
+|--------|----------------------------------------|--------|-----------------------------------------------------|
+| POST   | `/auth/admin/register/request-otp`     | Public | Send a registration OTP to an admin email           |
+| POST   | `/auth/admin/register/verify-otp`      | Public | Verify OTP and create the admin account             |
+| POST   | `/auth/user/register/request-otp`      | Public | Request user registration; OTP goes to the admin    |
+| POST   | `/auth/user/register/verify-otp`       | Public | Verify the admin-approved OTP and create the user   |
+| POST   | `/auth/login`                          | Public | Exchange credentials for a JWT                      |
+| POST   | `/api/admin/images/upload`             | ADMIN  | Upload a face image (multipart `file`) → `imageUrl` |
+| POST   | `/api/admin/dice`                      | ADMIN  | Create a die with exactly six faces                 |
+| GET    | `/api/admin/dice`                      | ADMIN  | List dice for an admin (`X-ADMIN-ID` header)        |
+| GET    | `/api/user/dice`                       | USER   | List dice available to the user (`X-ADMIN-ID`)      |
+| POST   | `/api/user/dice/roll/{diceId}`         | USER   | Roll a die → `{rolledValue, imageUrl}`              |
+| GET    | `/actuator/health`                     | Public | Liveness / health check                             |
+
+### Example: end-to-end with curl
+
+```bash
+# Login
+TOKEN=$(curl -s -X POST localhost:8082/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.com","password":"S3cure!pass"}' | jq -r .token)
+
+# Upload a face image
+curl -X POST localhost:8082/api/admin/images/upload \
+  -H "Authorization: Bearer $TOKEN" -F file=@face1.png
+# {"imageUrl":"/uploads/dice/<adminId>/<uuid>.png"}
+
+# Create a die
+curl -X POST localhost:8082/api/admin/dice \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"diceName":"Classic","faces":[
+        {"value":"1","imageUrl":"/uploads/dice/a/1.png"},
+        {"value":"2","imageUrl":"/uploads/dice/a/2.png"},
+        {"value":"3","imageUrl":"/uploads/dice/a/3.png"},
+        {"value":"4","imageUrl":"/uploads/dice/a/4.png"},
+        {"value":"5","imageUrl":"/uploads/dice/a/5.png"},
+        {"value":"6","imageUrl":"/uploads/dice/a/6.png"}]}'
+```
+
+### Error format
+
+```json
+{
+  "message": "Dice must contain exactly 6 faces",
+  "status": 400,
+  "timestamp": "2026-01-01T10:00:00Z",
+  "path": "/api/admin/dice"
+}
+```
+
+### Business rules
+
+- An admin can own at most **3** dice.
+- A die must have exactly **6** faces; each face needs a value and an image.
+- OTPs are 6 digits, single-use, and expire after **5 minutes**.
+- Image uploads must be `image/*` and ≤ **5 MB**.
+
+## Testing
+
+```bash
+# Run the test suite (JWT_SECRET must be set; any Base64 key ≥ 32 bytes works)
+JWT_SECRET=$(openssl rand -base64 32) ./gradlew test
+
+# HTML report
+open build/reports/tests/test/index.html
+```
+
+## Project structure
+
+```
+src/main/java/com/dynamic/dice
+├── configuration/   # Security filter chain, password encoder, MongoDB, static resources
+├── controller/      # REST endpoints (auth, admin, user, image upload)
+├── dto/             # Request / response payloads
+├── enums/           # Role
+├── exception/       # Domain exceptions
+├── filter/          # JwtAuthenticationFilter
+├── handler/         # GlobalExceptionHandler (uniform error contract)
+├── model/           # MongoDB documents
+├── repository/      # Spring Data repositories
+├── service/         # Service interfaces + implementations
+└── utils/           # JwtUtil, OtpUtil
+```
+
+## Roadmap
+
+- [ ] Unit and integration tests (Testcontainers MongoDB) with JaCoCo coverage gate
+- [ ] GitHub Actions CI: build, test, coverage, container image
+- [ ] Derive admin scope from the JWT instead of the `X-ADMIN-ID` header
+- [ ] Bean Validation (`@Valid`) on all request DTOs
+- [ ] OTP hardening: `SecureRandom`, attempt limits, rate limiting, TTL index
+- [ ] Persist roll history (`dice_roll_logs`) and expose a history endpoint
+- [ ] Object storage (S3-compatible) for images
+
+## License
+
+Distributed under the MIT License. See [LICENSE](LICENSE).
